@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import datetime
+import os
 
 # 設定頁面標題與佈局
 st.set_page_config(page_title="課研處 - 文化協同耆老與工作費管理系統", layout="wide")
@@ -11,11 +12,36 @@ RATE_IMMERSIVE = 405         # 沉浸式族語鐘點費 (元/節)
 RATE_WORK_FEE = 196          # 臨時工作費時薪 (元/小時)
 LIMIT_WORK_HOURS_MONTH = 15  # 工作費每月上限時數 (小時/月)
 
-# 初始化資料庫紀錄
+# 定義永久儲存的檔案名稱
+DATA_FILE = "data_records.csv"
+
+# 定義表格標準欄位
+COLUMNS = [
+    "日期", "申請處室", "活動型態", "年級班級", "主辦/授課教師", "人員/耆老姓名", "課程/活動/工作項目", "支領類別", "登記時數/節數", "備註"
+]
+
+# 輔助函式：讀取硬碟中的資料
+def load_data():
+    if os.path.exists(DATA_FILE):
+        try:
+            df = pd.read_csv(DATA_FILE, encoding="utf-8-sig")
+            # 確保欄位齊全
+            for col in COLUMNS:
+                if col not in df.columns:
+                    df[col] = ""
+            return df[COLUMNS]
+        except Exception:
+            return pd.DataFrame(columns=COLUMNS)
+    else:
+        return pd.DataFrame(columns=COLUMNS)
+
+# 輔助函式：將資料寫入硬碟
+def save_data(df):
+    df.to_csv(DATA_FILE, index=False, encoding="utf-8-sig")
+
+# 初始化 session_state
 if 'records' not in st.session_state:
-    st.session_state.records = pd.DataFrame(columns=[
-        "日期", "申請處室", "活動型態", "年級班級", "主辦/授課教師", "人員/耆老姓名", "課程/活動/工作項目", "支領類別", "登記時數/節數", "備註"
-    ])
+    st.session_state.records = load_data()
 
 st.title("🌾 課研處 - 文化協同耆老時數、鐘點費與工作費管理系統")
 
@@ -24,19 +50,13 @@ st.sidebar.header("📝 登錄耆老協同 / 臨時工作費紀錄")
 with st.sidebar.form("entry_form", clear_on_submit=True):
     date_val = st.date_input("授課/工作日期", datetime.date.today())
     
-    # 申請處室固定為課研處
     dept_val = "課研處"
     st.text_input("申請處室", value=dept_val, disabled=True)
     
     activity_type = st.selectbox("活動/計畫型態", ["一般年級文化課", "校外參訪協同", "全校性大活動", "校本課程/研習研發", "行政支援/臨時工作"])
-    
-    # 僅保留全校與 1-6 年級
     grade_val = st.selectbox("適用年級/對象", ["全校", "一年級", "二年級", "三年級", "四年級", "五年級", "六年級"])
-    
-    # 主辦/負責老師更改成主辦/授課教師
     teacher_val = st.text_input("主辦/授課教師", placeholder="例如：玉如老師 / 承彥老師")
     
-    # 支援同時輸入一位或多位耆老
     elder_input = st.text_input("人員 / 耆老姓名（若多位協同請用逗號隔開）", placeholder="例如：姜耆老, 羅耆老")
     course_title = st.text_input("課程/工作項目名稱", placeholder="例如：舊北葉部落尋根參訪 / 傳統工藝協同")
     
@@ -58,14 +78,11 @@ if submitted:
         date_str = date_val.strftime("%Y-%m-%d")
         month_str = date_val.strftime("%Y-%m")
         
-        # 解析多位耆老姓名 (以逗號或頓號拆分)
         raw_elders = elder_input.replace("、", ",").replace(" ", "").split(",")
         elder_list = [e.strip() for e in raw_elders if e.strip()]
         
-        # 針對拆解後的每一位耆老獨立新增一筆紀錄
         new_rows = []
         for single_elder in elder_list:
-            # 檢查工作費每月上限 (每人每月上限 15 小時)
             if "工作費" in pay_category:
                 existing_work_hrs = st.session_state.records[
                     (st.session_state.records["日期"].str.startswith(month_str)) & 
@@ -91,34 +108,39 @@ if submitted:
             
         new_data = pd.DataFrame(new_rows)
         st.session_state.records = pd.concat([st.session_state.records, new_data], ignore_index=True)
-        st.sidebar.success(f"✅ 已成功為 {len(elder_list)} 位人員/耆老新增紀錄！")
+        
+        # 存入檔案
+        save_data(st.session_state.records)
+        st.sidebar.success(f"✅ 已成功新增並存檔 {len(elder_list)} 筆紀錄！")
 
 tab1, tab2, tab3 = st.tabs(["📋 明細管理與編輯", "📊 自然月結與費用清冊", "📈 處室與人員時數統計"])
 
 with tab1:
-    st.subheader("明細資料表（可直接於表格內編輯與修正）")
+    st.subheader("明細資料表（可直接於表格內編輯，修改後請點擊下方「儲存修改」）")
     if not st.session_state.records.empty:
-        # 調整索引從 1 開始
         display_df = st.session_state.records.copy()
         display_df.index = range(1, len(display_df) + 1)
         
-        # 使用 st.data_editor 提供線上即時編輯功能
         edited_df = st.data_editor(
             display_df,
             use_container_width=True,
-            num_rows="dynamic", # 支援手動新增或刪除整列
+            num_rows="dynamic",
             key="records_editor"
         )
         
-        # 當使用者在表格中修改內容時，更新 session_state
-        st.session_state.records = edited_df.reset_index(drop=True)
-        
-        col_btn1, col_btn2 = st.columns([1, 5])
+        col_btn1, col_btn2 = st.columns([1, 4])
         with col_btn1:
+            if st.button("💾 儲存修改的內容"):
+                st.session_state.records = edited_df.reset_index(drop=True)
+                save_data(st.session_state.records)
+                st.success("✅ 資料已成功儲存！")
+                st.rerun()
+                
+        with col_btn2:
             if st.button("🗑️ 清空所有紀錄（慎用）"):
-                st.session_state.records = pd.DataFrame(columns=[
-                    "日期", "申請處室", "活動型態", "年級班級", "主辦/授課教師", "人員/耆老姓名", "課程/工作項目名稱", "支領類別", "登記時數/節數", "備註"
-                ])
+                st.session_state.records = pd.DataFrame(columns=COLUMNS)
+                save_data(st.session_state.records)
+                st.success("✅ 所有紀錄已清空！")
                 st.rerun()
     else:
         st.info("目前尚無登記紀錄，請由左側邊欄輸入資料。")
@@ -135,16 +157,12 @@ with tab2:
         
         m_df = df[df["月份"] == selected_month].copy()
         
-        # 計算費用邏輯
         summary_list = []
-        
         for idx, row in m_df.iterrows():
-            h = row["登記時數/節數"]
+            h = float(row["登記時數/節數"]) if row["登記時數/節數"] else 0.0
             p_cat = row["支領類別"]
             
-            exp_h = 0
-            imm_h = 0
-            work_h = 0
+            exp_h, imm_h, work_h = 0.0, 0.0, 0.0
             
             if "沉浸式" in str(p_cat):
                 imm_h = h
@@ -167,7 +185,6 @@ with tab2:
         
         summary_df = pd.DataFrame(summary_list)
         if not summary_df.empty:
-            # 1. 個人清冊
             final_person_summary = summary_df.groupby("人員/耆老姓名").agg({
                 "沉浸式節數": "sum",
                 "實驗教育節數": "sum",
@@ -178,12 +195,10 @@ with tab2:
                 "總金額": "sum"
             }).reset_index()
             
-            # 檢查是否有超過 15 小時工作費者
             final_person_summary["工作費狀態"] = final_person_summary["工作費小時數"].apply(
                 lambda x: "⚠️超過每月15小時上限" if x > LIMIT_WORK_HOURS_MONTH else "正常"
             )
             
-            # 2. 處室分攤清冊
             dept_summary = summary_df.groupby("申請處室").agg({
                 "沉浸式金額": "sum",
                 "實驗教育金額": "sum",
@@ -191,7 +206,6 @@ with tab2:
                 "總金額": "sum"
             }).reset_index()
             
-            # 編號從 1 開始顯示
             final_person_summary.index = range(1, len(final_person_summary) + 1)
             dept_summary.index = range(1, len(dept_summary) + 1)
             
@@ -202,14 +216,12 @@ with tab2:
             st.dataframe(dept_summary, use_container_width=True)
             
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("實驗教育總額 (400元/節)", f"NT$ {final_person_summary['實驗教育金額'].sum():,}")
-            col2.metric("沉浸式總額 (405元/節)", f"NT$ {final_person_summary['沉浸式金額'].sum():,}")
-            col3.metric("工作費總額 (196元/時)", f"NT$ {final_person_summary['工作費金額'].sum():,}")
-            col4.metric("本月應發放總金額", f"NT$ {final_person_summary['總金額'].sum():,}")
+            col1.metric("實驗教育總額 (400元/節)", f"NT$ {final_person_summary['實驗教育金額'].sum():,.0f}")
+            col2.metric("沉浸式總額 (405元/節)", f"NT$ {final_person_summary['沉浸式金額'].sum():,.0f}")
+            col3.metric("工作費總額 (196元/時)", f"NT$ {final_person_summary['工作費金額'].sum():,.0f}")
+            col4.metric("本月應發放總金額", f"NT$ {final_person_summary['總金額'].sum():,.0f}")
 
-            # 導出 Excel
             output_filename = f"{selected_month}_課研處經費分攤表與清冊.xlsx"
-            
             m_df_export = m_df.copy()
             m_df_export.index = range(1, len(m_df_export) + 1)
             
