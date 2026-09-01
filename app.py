@@ -3,7 +3,7 @@ import pandas as pd
 import datetime
 
 # 設定頁面標題與佈局
-st.set_page_config(page_title="北葉國小 - 文化協同耆老與工作費管理系統", layout="wide")
+st.set_page_config(page_title="課研處 - 文化協同耆老與工作費管理系統", layout="wide")
 
 # 費率與上限預設
 RATE_EXPERIMENTAL = 400      # 實驗教育鐘點費 (元/節)
@@ -14,22 +14,27 @@ LIMIT_WORK_HOURS_MONTH = 15  # 工作費每月上限時數 (小時/月)
 # 初始化資料庫紀錄
 if 'records' not in st.session_state:
     st.session_state.records = pd.DataFrame(columns=[
-        "日期", "週次", "申請處室", "活動型態", "年級班級", "主辦/負責人", "人員/耆老姓名", "課程/活動/工作項目", "支領類別", "登記時數/節數", "備註"
+        "日期", "申請處室", "活動型態", "年級班級", "主辦/授課教師", "人員/耆老姓名", "課程/活動/工作項目", "支領類別", "登記時數/節數", "備註"
     ])
 
-st.title("🌾 屏東縣北葉國小 - 文化協同耆老時數、鐘點費與工作費管理系統")
+st.title("🌾 課研處 - 文化協同耆老時數、鐘點費與工作費管理系統")
 
 st.sidebar.header("📝 登錄耆老協同 / 臨時工作費紀錄")
 
 with st.sidebar.form("entry_form", clear_on_submit=True):
     date_val = st.date_input("授課/工作日期", datetime.date.today())
-    week_val = st.number_input("教學週次（第幾週）", min_value=1, max_value=25, value=1, step=1)
     
-    dept_val = st.selectbox("申請處室", ["課研處/研發處（實驗教育/專案）", "教導處（年級課程）", "總務處/其他"])
+    # 申請處室固定為課研處
+    dept_val = "課研處"
+    st.text_input("申請處室", value=dept_val, disabled=True)
+    
     activity_type = st.selectbox("活動/計畫型態", ["一般年級文化課", "校外參訪協同", "全校性大活動", "校本課程/研習研發", "行政支援/臨時工作"])
     
-    grade_val = st.selectbox("適用年級/對象", ["全校", "一年級", "二年級", "三年級", "四年級", "五年級", "六年級", "高年級", "低年級", "不限/專案"])
-    teacher_val = st.text_input("主辦/負責教師", placeholder="例如：玉如老師 / 承彥老師")
+    # 僅保留全校與 1-6 年級
+    grade_val = st.selectbox("適用年級/對象", ["全校", "一年級", "二年級", "三年級", "四年級", "五年級", "六年級"])
+    
+    # 主辦/負責老師更改成主辦/授課教師
+    teacher_val = st.text_input("主辦/授課教師", placeholder="例如：玉如老師 / 承彥老師")
     
     # 支援同時輸入一位或多位耆老
     elder_input = st.text_input("人員 / 耆老姓名（若多位協同請用逗號隔開）", placeholder="例如：姜耆老, 羅耆老")
@@ -48,7 +53,7 @@ with st.sidebar.form("entry_form", clear_on_submit=True):
 
 if submitted:
     if not teacher_val or not elder_input:
-        st.sidebar.error("⚠️ 請填寫主辦/負責教師與人員/耆老姓名！")
+        st.sidebar.error("⚠️ 請填寫主辦/授課教師與人員/耆老姓名！")
     else:
         date_str = date_val.strftime("%Y-%m-%d")
         month_str = date_val.strftime("%Y-%m")
@@ -57,19 +62,7 @@ if submitted:
         raw_elders = elder_input.replace("、", ",").replace(" ", "").split(",")
         elder_list = [e.strip() for e in raw_elders if e.strip()]
         
-        # 1. 檢查沉浸式每週上限 (僅針對一般年級文化課控管：同班同週上限 1 節)
-        if "沉浸式" in pay_category and activity_type == "一般年級文化課":
-            existing_imm = st.session_state.records[
-                (st.session_state.records["週次"] == week_val) & 
-                (st.session_state.records["年級班級"] == grade_val) & 
-                (st.session_state.records["支領類別"].str.contains("沉浸式")) &
-                (st.session_state.records["活動型態"] == "一般年級文化課")
-            ]["登記時數/節數"].sum()
-            
-            if existing_imm + hours_val > 1:
-                st.warning(f"⚠️ 警示：【{grade_val}】在【第 {week_val} 週】已有 {existing_imm} 節沉浸式課程。超過 1 節部分將在月結時自動改按實驗教育鐘點費（400元/節）計算！")
-        
-        # 2. 針對拆解後的每一位耆老獨立新增一筆紀錄
+        # 針對拆解後的每一位耆老獨立新增一筆紀錄
         new_rows = []
         for single_elder in elder_list:
             # 檢查工作費每月上限 (每人每月上限 15 小時)
@@ -85,11 +78,10 @@ if submitted:
             
             new_rows.append({
                 "日期": date_str,
-                "週次": week_val,
                 "申請處室": dept_val,
                 "活動型態": activity_type,
                 "年級班級": grade_val,
-                "主辦/負責人": teacher_val,
+                "主辦/授課教師": teacher_val,
                 "人員/耆老姓名": single_elder,
                 "課程/工作項目名稱": course_title,
                 "支領類別": pay_category,
@@ -101,17 +93,33 @@ if submitted:
         st.session_state.records = pd.concat([st.session_state.records, new_data], ignore_index=True)
         st.sidebar.success(f"✅ 已成功為 {len(elder_list)} 位人員/耆老新增紀錄！")
 
-tab1, tab2, tab3 = st.tabs(["📋 明細管理", "📊 自然月結與費用清冊", "📈 處室與人員時數統計"])
+tab1, tab2, tab3 = st.tabs(["📋 明細管理與編輯", "📊 自然月結與費用清冊", "📈 處室與人員時數統計"])
 
 with tab1:
-    st.subheader("明細資料表")
+    st.subheader("明細資料表（可直接於表格內編輯與修正）")
     if not st.session_state.records.empty:
-        st.dataframe(st.session_state.records, use_container_width=True)
-        if st.button("🗑️ 清空所有紀錄（慎用）"):
-            st.session_state.records = pd.DataFrame(columns=[
-                "日期", "週次", "申請處室", "活動型態", "年級班級", "主辦/負責人", "人員/耆老姓名", "課程/工作項目名稱", "支領類別", "登記時數/節數", "備註"
-            ])
-            st.rerun()
+        # 調整索引從 1 開始
+        display_df = st.session_state.records.copy()
+        display_df.index = range(1, len(display_df) + 1)
+        
+        # 使用 st.data_editor 提供線上即時編輯功能
+        edited_df = st.data_editor(
+            display_df,
+            use_container_width=True,
+            num_rows="dynamic", # 支援手動新增或刪除整列
+            key="records_editor"
+        )
+        
+        # 當使用者在表格中修改內容時，更新 session_state
+        st.session_state.records = edited_df.reset_index(drop=True)
+        
+        col_btn1, col_btn2 = st.columns([1, 5])
+        with col_btn1:
+            if st.button("🗑️ 清空所有紀錄（慎用）"):
+                st.session_state.records = pd.DataFrame(columns=[
+                    "日期", "申請處室", "活動型態", "年級班級", "主辦/授課教師", "人員/耆老姓名", "課程/工作項目名稱", "支領類別", "登記時數/節數", "備註"
+                ])
+                st.rerun()
     else:
         st.info("目前尚無登記紀錄，請由左側邊欄輸入資料。")
 
@@ -138,11 +146,11 @@ with tab2:
             imm_h = 0
             work_h = 0
             
-            if "沉浸式" in p_cat:
+            if "沉浸式" in str(p_cat):
                 imm_h = h
-            elif "實驗教育" in p_cat:
+            elif "實驗教育" in str(p_cat):
                 exp_h = h
-            elif "工作費" in p_cat:
+            elif "工作費" in str(p_cat):
                 work_h = h
                 
             summary_list.append({
@@ -183,6 +191,10 @@ with tab2:
                 "總金額": "sum"
             }).reset_index()
             
+            # 編號從 1 開始顯示
+            final_person_summary.index = range(1, len(final_person_summary) + 1)
+            dept_summary.index = range(1, len(dept_summary) + 1)
+            
             st.write(f"### 📍 {selected_month} 月份 - 個人領據發放清冊")
             st.dataframe(final_person_summary, use_container_width=True)
             
@@ -196,11 +208,15 @@ with tab2:
             col4.metric("本月應發放總金額", f"NT$ {final_person_summary['總金額'].sum():,}")
 
             # 導出 Excel
-            output_filename = f"{selected_month}_費用經費分攤表與清冊.xlsx"
+            output_filename = f"{selected_month}_課研處經費分攤表與清冊.xlsx"
+            
+            m_df_export = m_df.copy()
+            m_df_export.index = range(1, len(m_df_export) + 1)
+            
             with pd.ExcelWriter(output_filename, engine='openpyxl') as writer:
-                final_person_summary.to_excel(writer, index=False, sheet_name="個人領據清冊")
-                dept_summary.to_excel(writer, index=False, sheet_name="處室分攤表")
-                m_df.to_excel(writer, index=False, sheet_name="當月明細")
+                final_person_summary.to_excel(writer, index=True, sheet_name="個人領據清冊")
+                dept_summary.to_excel(writer, index=True, sheet_name="處室分攤表")
+                m_df_export.to_excel(writer, index=True, sheet_name="當月明細")
                 
             with open(output_filename, "rb") as file:
                 st.download_button(
@@ -219,14 +235,20 @@ with tab3:
         
         col_a, col_b = st.columns(2)
         with col_a:
-            st.write("#### 1. 各處室累積申請時數/節數")
-            st.dataframe(df.groupby("申請處室")["登記時數/節數"].sum().reset_index(), use_container_width=True)
+            st.write("#### 1. 課研處累積申請總時數/節數")
+            st_dept = df.groupby("申請處室")["登記時數/節數"].sum().reset_index()
+            st_dept.index = range(1, len(st_dept) + 1)
+            st.dataframe(st_dept, use_container_width=True)
             
         with col_b:
             st.write("#### 2. 各計畫/活動型態分布")
-            st.dataframe(df.groupby("活動型態")["登記時數/節數"].sum().reset_index(), use_container_width=True)
+            st_act = df.groupby("活動型態")["登記時數/節數"].sum().reset_index()
+            st_act.index = range(1, len(st_act) + 1)
+            st.dataframe(st_act, use_container_width=True)
 
         st.write("#### 3. 個人支領類別與總時數/節數")
-        st.dataframe(df.groupby(["人員/耆老姓名", "支領類別"])["登記時數/節數"].sum().unstack(fill_value=0).reset_index(), use_container_width=True)
+        st_person = df.groupby(["人員/耆老姓名", "支領類別"])["登記時數/節數"].sum().unstack(fill_value=0).reset_index()
+        st_person.index = range(1, len(st_person) + 1)
+        st.dataframe(st_person, use_container_width=True)
     else:
         st.info("尚無統計數據。")
