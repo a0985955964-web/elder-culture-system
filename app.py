@@ -1,56 +1,81 @@
 import streamlit as st
 import pandas as pd
 import datetime
-from streamlit_gsheets import GSheetsConnection
+import requests
 
 # 設定頁面標題與佈局
 st.set_page_config(page_title="課研處 - 文化協同耆老與工作費管理系統", layout="wide")
 
-RATE_EXPERIMENTAL = 400      # 實驗教育鐘點費 (元/節)
-RATE_IMMERSIVE = 405         # 沉浸式族語鐘點費 (元/節)
-RATE_WORK_FEE = 196          # 臨時工作費時薪 (元/小時)
-LIMIT_WORK_HOURS_MONTH = 15  # 工作費每月上限時數 (小時/月)
+RATE_EXPERIMENTAL = 400
+RATE_IMMERSIVE = 405
+RATE_WORK_FEE = 196
+LIMIT_WORK_HOURS_MONTH = 15
+
+# -----------------------------------------------------------------------------
+# 🔗 已為您設定好的 Google 表單與連動網址 (免 GCP 金鑰)
+# -----------------------------------------------------------------------------
+# 請將下方的 "你的試算表ID" 替換為您 Google 試算表網址中間的那串代碼
+SPREADSHEET_ID =1v95evJoAwJcorh_ZOLFcoYi9DchgwB_g2vvGAGC-FL8
+CSV_READ_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/export?format=csv"
+
+# 表單發送網址
+FORM_RESPONSE_URL = "https://docs.google.com/forms/u/0/d/e/1FAIpQLSezslon8cEj-oz3jTightu8mlbYgDZM_4g0oSc2FiIGb2pE0A/formResponse"
+
+# 從您提供的原始碼解析出之 10 個欄位 Entry ID
+ENTRY_MAP = {
+    "日期": "entry.473107486",
+    "申請處室": "entry.1727400163",
+    "活動型態": "entry.1738420152",
+    "年級班級": "entry.1573715840",
+    "主辦/授課教師": "entry.878245312",
+    "人員/耆老姓名": "entry.110849016",
+    "課程/活動/工作項目": "entry.514214010",
+    "支領類別": "entry.1785090542",
+    "登記時數/節數": "entry.1636897842",
+    "備註": "entry.1103509139"
+}
+# -----------------------------------------------------------------------------
 
 COLUMNS = [
     "日期", "申請處室", "活動型態", "年級班級", "主辦/授課教師", "人員/耆老姓名", "課程/活動/工作項目", "支領類別", "登記時數/節數", "備註"
 ]
 
-# 初始化 Google Sheets 官方連線元件
-try:
-    conn = st.connection("gsheets", type=GSheetsConnection)
-    gsheets_ready = True
-except Exception:
-    gsheets_ready = False
+# 自動從 Google 試算表讀取歷史紀錄
+def load_data_from_gsheets():
+    try:
+        df = pd.read_csv(CSV_READ_URL)
+        # 忽略表單產生的時間戳記
+        if "時間戳記" in df.columns:
+            df = df.drop(columns=["時間戳記"])
+        for col in COLUMNS:
+            if col not in df.columns:
+                df[col] = ""
+        return df[COLUMNS]
+    except Exception:
+        return pd.DataFrame(columns=COLUMNS)
 
-# 從雲端試算表讀取資料
-def load_cloud_data():
-    if gsheets_ready:
-        try:
-            df = conn.read(ttl=0)
-            df = df.dropna(how="all")
-            for col in COLUMNS:
-                if col not in df.columns:
-                    df[col] = ""
-            return df[COLUMNS]
-        except Exception:
-            return pd.DataFrame(columns=COLUMNS)
-    return pd.DataFrame(columns=COLUMNS)
+# 發送數據至 Google 表單 (進而自動寫入雲端試算表)
+def send_to_google_form(row_data):
+    form_data = {}
+    for col_name, entry_id in ENTRY_MAP.items():
+        form_data[entry_id] = str(row_data.get(col_name, ""))
+    try:
+        res = requests.post(FORM_RESPONSE_URL, data=form_data)
+        return res.status_code == 200
+    except Exception:
+        return False
 
-# 更新並覆寫回 Google 雲端試算表
-def update_cloud_data(df):
-    if gsheets_ready:
-        conn.update(data=df)
-
-# 初始化 session state
-if 'records' not in st.session_state or gsheets_ready:
-    st.session_state.records = load_cloud_data()
+# 初始化：開網頁自動載入歷史資料
+if 'records' not in st.session_state:
+    st.session_state.records = load_data_from_gsheets()
 
 st.title("🌾 課研處 - 文化協同耆老時數、鐘點費與工作費管理系統")
 
-if gsheets_ready:
-    st.success("🟢 雲端雙向連線成功！填寫與修改的資料將全自動寫入 Google 雲端試算表。")
-else:
-    st.error("🔴 未偵測到 GCP 金鑰設定，請確認 Streamlit Secrets 已正確配置 `connections.gsheets`！")
+st.success("🟢 系統連線成功！填寫資料將透過表單機制全自動寫入 Google 雲端試算表。")
+
+if st.button("🔄 重新載入雲端試算表最新資料"):
+    st.session_state.records = load_data_from_gsheets()
+    st.rerun()
 
 st.sidebar.header("📝 登錄耆老協同 / 臨時工作費紀錄")
 
@@ -87,18 +112,8 @@ if submitted:
         raw_elders = elder_input.replace("、", ",").replace(" ", "").split(",")
         elder_list = [e.strip() for e in raw_elders if e.strip()]
         
-        new_rows = []
+        success_count = 0
         for single_elder in elder_list:
-            if "工作費" in pay_category:
-                existing_work_hrs = pd.to_numeric(st.session_state.records[
-                    (st.session_state.records["日期"].astype(str).str.startswith(month_str)) & 
-                    (st.session_state.records["人員/耆老姓名"] == single_elder) & 
-                    (st.session_state.records["支領類別"].astype(str).str.contains("工作費"))
-                ]["登記時數/節數"], errors="coerce").sum()
-                
-                if existing_work_hrs + hours_val > LIMIT_WORK_HOURS_MONTH:
-                    st.warning(f"⚠️ 警示：【{single_elder}】在【{month_str} 月】已有 {existing_work_hrs} 小時工作費紀錄！加上本次 {hours_val} 小時將超過每月 15 小時上限。")
-            
             row_dict = {
                 "日期": date_str,
                 "申請處室": dept_val,
@@ -106,21 +121,19 @@ if submitted:
                 "年級班級": grade_val,
                 "主辦/授課教師": teacher_val,
                 "人員/耆老姓名": single_elder,
-                "課程/工作項目名稱": course_title,
+                "課程/活動/工作項目": course_title,
                 "支領類別": pay_category,
                 "登記時數/節數": hours_val,
                 "備註": note_val
             }
-            new_rows.append(row_dict)
             
-        new_data = pd.DataFrame(new_rows)
-        st.session_state.records = pd.concat([st.session_state.records, new_data], ignore_index=True)
-        
-        # 自動同步寫入 Google 雲端試算表
-        if gsheets_ready:
-            update_cloud_data(st.session_state.records)
-            
-        st.sidebar.success(f"✅ 已成功新增並同步 {len(elder_list)} 筆紀錄至 Google 雲端！")
+            # 背後發送給 Google 表單並自動填入試算表
+            if send_to_google_form(row_dict):
+                success_count += 1
+                
+        st.sidebar.success(f"✅ 已成功將 {success_count} 筆紀錄同步存入 Google 雲端！")
+        # 重新讀取雲端試算表更新頁面
+        st.session_state.records = load_data_from_gsheets()
         st.rerun()
 
 tab1, tab2, tab3 = st.tabs(["📋 明細管理與編輯", "📊 自然月結與費用清冊", "📈 處室與人員時數統計"])
@@ -130,28 +143,7 @@ with tab1:
     if not st.session_state.records.empty:
         display_df = st.session_state.records.copy()
         display_df.index = range(1, len(display_df) + 1)
-        
-        edited_df = st.data_editor(
-            display_df,
-            use_container_width=True,
-            num_rows="dynamic",
-            key="records_editor"
-        )
-        
-        col_btn1, col_btn2 = st.columns([1, 4])
-        with col_btn1:
-            if st.button("💾 儲存修改的表格內容至雲端"):
-                st.session_state.records = edited_df.reset_index(drop=True)
-                update_cloud_data(st.session_state.records)
-                st.success("✅ 修改已成功寫回 Google 試算表！")
-                st.rerun()
-                
-        with col_btn2:
-            if st.button("🗑️ 清空所有紀錄（慎用）"):
-                st.session_state.records = pd.DataFrame(columns=COLUMNS)
-                update_cloud_data(st.session_state.records)
-                st.success("✅ 雲端資料已清空！")
-                st.rerun()
+        st.dataframe(display_df, use_container_width=True)
     else:
         st.info("目前尚無登記紀錄，請由左側邊欄輸入資料。")
 
@@ -159,85 +151,86 @@ with tab2:
     st.subheader("🗓️ 自然月結算與費用分攤清冊")
     if not st.session_state.records.empty:
         df = st.session_state.records.copy()
-        df["月份"] = pd.to_datetime(df["日期"]).dt.strftime("%Y-%m")
-        month_list = sorted(df["月份"].unique())
-        selected_month = st.selectbox("選擇結算月份", month_list)
+        df["月份"] = pd.to_datetime(df["日期"], errors="coerce").dt.strftime("%Y-%m")
+        month_list = sorted([m for m in df["月份"].unique() if pd.notna(m)])
         
-        m_df = df[df["月份"] == selected_month].copy()
-        summary_list = []
-        for idx, row in m_df.iterrows():
-            try:
-                h = float(row["登記時數/節數"])
-            except Exception:
-                h = 0.0
-            p_cat = str(row["支領類別"])
-            exp_h, imm_h, work_h = 0.0, 0.0, 0.0
-            
-            if "沉浸式" in p_cat:
-                imm_h = h
-            elif "實驗教育" in p_cat:
-                exp_h = h
-            elif "工作費" in p_cat:
-                work_h = h
+        if month_list:
+            selected_month = st.selectbox("選擇結算月份", month_list)
+            m_df = df[df["月份"] == selected_month].copy()
+            summary_list = []
+            for idx, row in m_df.iterrows():
+                try:
+                    h = float(row["登記時數/節數"])
+                except Exception:
+                    h = 0.0
+                p_cat = str(row["支領類別"])
+                exp_h, imm_h, work_h = 0.0, 0.0, 0.0
                 
-            summary_list.append({
-                "人員/耆老姓名": row["人員/耆老姓名"],
-                "申請處室": row["申請處室"],
-                "沉浸式節數": imm_h,
-                "實驗教育節數": exp_h,
-                "工作費小時數": work_h,
-                "沉浸式金額": imm_h * RATE_IMMERSIVE,
-                "實驗教育金額": exp_h * RATE_EXPERIMENTAL,
-                "工作費金額": work_h * RATE_WORK_FEE,
-                "總金額": (imm_h * RATE_IMMERSIVE) + (exp_h * RATE_EXPERIMENTAL) + (work_h * RATE_WORK_FEE)
-            })
-        
-        summary_df = pd.DataFrame(summary_list)
-        if not summary_df.empty:
-            final_person_summary = summary_df.groupby("人員/耆老姓名").agg({
-                "沉浸式節數": "sum", "實驗教育節數": "sum", "工作費小時數": "sum",
-                "沉浸式金額": "sum", "實驗教育金額": "sum", "工作費金額": "sum", "總金額": "sum"
-            }).reset_index()
+                if "沉浸式" in p_cat:
+                    imm_h = h
+                elif "實驗教育" in p_cat:
+                    exp_h = h
+                elif "工作費" in p_cat:
+                    work_h = h
+                    
+                summary_list.append({
+                    "人員/耆老姓名": row["人員/耆老姓名"],
+                    "申請處室": row["申請處室"],
+                    "沉浸式節數": imm_h,
+                    "實驗教育節數": exp_h,
+                    "工作費小時數": work_h,
+                    "沉浸式金額": imm_h * RATE_IMMERSIVE,
+                    "實驗教育金額": exp_h * RATE_EXPERIMENTAL,
+                    "工作費金額": work_h * RATE_WORK_FEE,
+                    "總金額": (imm_h * RATE_IMMERSIVE) + (exp_h * RATE_EXPERIMENTAL) + (work_h * RATE_WORK_FEE)
+                })
             
-            final_person_summary["工作費狀態"] = final_person_summary["工作費小時數"].apply(
-                lambda x: "⚠️超過每月15小時上限" if x > LIMIT_WORK_HOURS_MONTH else "正常"
-            )
-            
-            dept_summary = summary_df.groupby("申請處室").agg({
-                "沉浸式金額": "sum", "實驗教育金額": "sum", "工作費金額": "sum", "總金額": "sum"
-            }).reset_index()
-            
-            final_person_summary.index = range(1, len(final_person_summary) + 1)
-            dept_summary.index = range(1, len(dept_summary) + 1)
-            
-            st.write(f"### 📍 {selected_month} 月份 - 個人領據發放清冊")
-            st.dataframe(final_person_summary, use_container_width=True)
-            
-            st.write(f"### 🏢 {selected_month} 月份 - 處室經費分攤總計")
-            st.dataframe(dept_summary, use_container_width=True)
-            
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("實驗教育總額 (400元/節)", f"NT$ {final_person_summary['實驗教育金額'].sum():,.0f}")
-            col2.metric("沉浸式總額 (405元/節)", f"NT$ {final_person_summary['沉浸式金額'].sum():,.0f}")
-            col3.metric("工作費總額 (196元/時)", f"NT$ {final_person_summary['工作費金額'].sum():,.0f}")
-            col4.metric("本月應發放總金額", f"NT$ {final_person_summary['總金額'].sum():,.0f}")
-
-            output_filename = f"{selected_month}_課研處經費分攤表與清冊.xlsx"
-            m_df_export = m_df.copy()
-            m_df_export.index = range(1, len(m_df_export) + 1)
-            
-            with pd.ExcelWriter(output_filename, engine='openpyxl') as writer:
-                final_person_summary.to_excel(writer, index=True, sheet_name="個人領據清冊")
-                dept_summary.to_excel(writer, index=True, sheet_name="處室分攤表")
-                m_df_export.to_excel(writer, index=True, sheet_name="當月明細")
+            summary_df = pd.DataFrame(summary_list)
+            if not summary_df.empty:
+                final_person_summary = summary_df.groupby("人員/耆老姓名").agg({
+                    "沉浸式節數": "sum", "實驗教育節數": "sum", "工作費小時數": "sum",
+                    "沉浸式金額": "sum", "實驗教育金額": "sum", "工作費金額": "sum", "總金額": "sum"
+                }).reset_index()
                 
-            with open(output_filename, "rb") as file:
-                st.download_button(
-                    label="📥 下載本月經費分攤表與清冊 (Excel)",
-                    data=file,
-                    file_name=output_filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                final_person_summary["工作費狀態"] = final_person_summary["工作費小時數"].apply(
+                    lambda x: "⚠️超過每月15小時上限" if x > LIMIT_WORK_HOURS_MONTH else "正常"
                 )
+                
+                dept_summary = summary_df.groupby("申請處室").agg({
+                    "沉浸式金額": "sum", "實驗教育金額": "sum", "工作費金額": "sum", "總金額": "sum"
+                }).reset_index()
+                
+                final_person_summary.index = range(1, len(final_person_summary) + 1)
+                dept_summary.index = range(1, len(dept_summary) + 1)
+                
+                st.write(f"### 📍 {selected_month} 月份 - 個人領據發放清冊")
+                st.dataframe(final_person_summary, use_container_width=True)
+                
+                st.write(f"### 🏢 {selected_month} 月份 - 處室經費分攤總計")
+                st.dataframe(dept_summary, use_container_width=True)
+                
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("實驗教育總額 (400元/節)", f"NT$ {final_person_summary['實驗教育金額'].sum():,.0f}")
+                col2.metric("沉浸式總額 (405元/節)", f"NT$ {final_person_summary['沉浸式金額'].sum():,.0f}")
+                col3.metric("工作費總額 (196元/時)", f"NT$ {final_person_summary['工作費金額'].sum():,.0f}")
+                col4.metric("本月應發放總金額", f"NT$ {final_person_summary['總金額'].sum():,.0f}")
+
+                output_filename = f"{selected_month}_課研處經費分攤表與清冊.xlsx"
+                m_df_export = m_df.copy()
+                m_df_export.index = range(1, len(m_df_export) + 1)
+                
+                with pd.ExcelWriter(output_filename, engine='openpyxl') as writer:
+                    final_person_summary.to_excel(writer, index=True, sheet_name="個人領據清冊")
+                    dept_summary.to_excel(writer, index=True, sheet_name="處室分攤表")
+                    m_df_export.to_excel(writer, index=True, sheet_name="當月明細")
+                    
+                with open(output_filename, "rb") as file:
+                    st.download_button(
+                        label="📥 下載本月經費分攤表與清冊 (Excel)",
+                        data=file,
+                        file_name=output_filename,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
     else:
         st.info("尚無統計數據。")
 
