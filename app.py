@@ -1,8 +1,6 @@
 import streamlit as st
 import pandas as pd
 import datetime
-import gspread
-from google.oauth2.service_account import Credentials
 
 # 設定頁面標題與佈局
 st.set_page_config(page_title="課研處 - 文化協同耆老與工作費管理系統", layout="wide")
@@ -17,56 +15,36 @@ COLUMNS = [
     "日期", "申請處室", "活動型態", "年級班級", "主辦/授課教師", "人員/耆老姓名", "課程/活動/工作項目", "支領類別", "登記時數/節數", "備註"
 ]
 
-# Google Sheets 串接設定
-@st.cache_resource
-def init_gsheets():
-    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-    creds_dict = st.secrets["gcp_service_account"]
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    client = gspread.authorize(creds)
-    sheet_url = st.secrets["spreadsheet_url"]
-    sh = client.open_by_url(sheet_url)
-    return sh.sheet1
+# 檢查是否有設定 Secrets 網址
+has_url = "spreadsheet_url" in st.secrets
 
-try:
-    ws = init_gsheets()
-    gsheets_connected = True
-except Exception as e:
-    gsheets_connected = False
-
-def load_data():
-    if gsheets_connected:
+# 從 Google Sheets 匯入 CSV 格式資料
+def load_gsheets_csv():
+    if has_url:
         try:
-            records = ws.get_all_records()
-            df = pd.DataFrame(records)
+            raw_url = st.secrets["spreadsheet_url"]
+            # 轉換為 CSV 下載連結
+            sheet_id = raw_url.split('/d/')[1].split('/')[0]
+            csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+            df = pd.read_csv(csv_url)
             for col in COLUMNS:
                 if col not in df.columns:
                     df[col] = ""
             return df[COLUMNS]
         except Exception:
             return pd.DataFrame(columns=COLUMNS)
-    else:
-        if 'records' in st.session_state:
-            return st.session_state.records
-        return pd.DataFrame(columns=COLUMNS)
-
-def save_all_data(df):
-    if gsheets_connected:
-        ws.clear()
-        ws.append_row(COLUMNS)
-        if not df.empty:
-            ws.append_rows(df.astype(str).values.tolist())
+    return pd.DataFrame(columns=COLUMNS)
 
 # 初始化資料
-if 'records' not in st.session_state or gsheets_connected:
-    st.session_state.records = load_data()
+if 'records' not in st.session_state or has_url:
+    st.session_state.records = load_gsheets_csv()
 
 st.title("🌾 課研處 - 文化協同耆老時數、鐘點費與工作費管理系統")
 
-if gsheets_connected:
-    st.success("🟢 雲端連線狀態：已成功同步連線至 Google Drive 雲端試算表！資料將全自動永久備份。")
+if has_url:
+    st.success("🟢 雲端連線狀態：已成功讀取 Google Drive 試算表！")
 else:
-    st.warning("🟠 雲端連線狀態：未設定 Google Secrets 連線，目前運作於單次暫存模式。")
+    st.warning("🟠 雲端連線狀態：未於 Secrets 設定 `spreadsheet_url`，目前運作於單次暫存模式。")
 
 st.sidebar.header("📝 登錄耆老協同 / 臨時工作費紀錄")
 
@@ -106,16 +84,16 @@ if submitted:
         new_rows = []
         for single_elder in elder_list:
             if "工作費" in pay_category:
-                existing_work_hrs = st.session_state.records[
+                existing_work_hrs = pd.to_numeric(st.session_state.records[
                     (st.session_state.records["日期"].astype(str).str.startswith(month_str)) & 
                     (st.session_state.records["人員/耆老姓名"] == single_elder) & 
                     (st.session_state.records["支領類別"].astype(str).str.contains("工作費"))
-                ]["登記時數/節數"].astype(float).sum()
+                ]["登記時數/節數"], errors="coerce").sum()
                 
                 if existing_work_hrs + hours_val > LIMIT_WORK_HOURS_MONTH:
                     st.warning(f"⚠️ 警示：【{single_elder}】在【{month_str} 月】已有 {existing_work_hrs} 小時工作費紀錄！加上本次 {hours_val} 小時將超過每月 15 小時上限。")
             
-            row_dict = {
+            new_rows.append({
                 "日期": date_str,
                 "申請處室": dept_val,
                 "活動型態": activity_type,
@@ -126,22 +104,16 @@ if submitted:
                 "支領類別": pay_category,
                 "登記時數/節數": hours_val,
                 "備註": note_val
-            }
-            new_rows.append(row_dict)
+            })
             
-            # 即時寫入 Google Sheets
-            if gsheets_connected:
-                ws.append_row([str(row_dict[c]) for c in COLUMNS])
-                
         new_data = pd.DataFrame(new_rows)
         st.session_state.records = pd.concat([st.session_state.records, new_data], ignore_index=True)
-        st.sidebar.success(f"✅ 已成功新增並即時同步 {len(elder_list)} 筆紀錄至 Google 雲端硬碟！")
-        st.rerun()
+        st.sidebar.success(f"✅ 已成功新增 {len(elder_list)} 筆紀錄！")
 
 tab1, tab2, tab3 = st.tabs(["📋 明細管理與編輯", "📊 自然月結與費用清冊", "📈 處室與人員時數統計"])
 
 with tab1:
-    st.subheader("明細資料表（可直接於表格內編輯，修改後請點擊「儲存修改」）")
+    st.subheader("明細資料表")
     if not st.session_state.records.empty:
         display_df = st.session_state.records.copy()
         display_df.index = range(1, len(display_df) + 1)
@@ -153,19 +125,21 @@ with tab1:
             key="records_editor"
         )
         
+        st.session_state.records = edited_df.reset_index(drop=True)
+        
         col_btn1, col_btn2 = st.columns([1, 4])
         with col_btn1:
-            if st.button("💾 儲存修改內容至 Google 雲端"):
-                st.session_state.records = edited_df.reset_index(drop=True)
-                save_all_data(st.session_state.records)
-                st.success("✅ 資料已同步更新至 Google 雲端試算表！")
-                st.rerun()
-                
+            csv_data = st.session_state.records.to_csv(index=False, encoding="utf-8-sig")
+            st.download_button(
+                label="📥 下載全表 CSV (備份用)",
+                data=csv_data,
+                file_name=f"課研處資料庫_{datetime.date.today()}.csv",
+                mime="text/csv"
+            )
+            
         with col_btn2:
             if st.button("🗑️ 清空所有紀錄（慎用）"):
                 st.session_state.records = pd.DataFrame(columns=COLUMNS)
-                save_all_data(st.session_state.records)
-                st.success("✅ 所有紀錄已自雲端清空！")
                 st.rerun()
     else:
         st.info("目前尚無登記紀錄，請由左側邊欄輸入資料。")
@@ -181,7 +155,10 @@ with tab2:
         m_df = df[df["月份"] == selected_month].copy()
         summary_list = []
         for idx, row in m_df.iterrows():
-            h = float(row["登記時數/節數"]) if row["登記時數/節數"] else 0.0
+            try:
+                h = float(row["登記時數/節數"])
+            except Exception:
+                h = 0.0
             p_cat = str(row["支領類別"])
             exp_h, imm_h, work_h = 0.0, 0.0, 0.0
             
@@ -257,8 +234,6 @@ with tab3:
     st.subheader("📈 處室、項目與人員時數統計")
     if not st.session_state.records.empty:
         df = st.session_state.records.copy()
-        
-        # 先將「登記時數/節數」欄位統一轉為數字型態，避免運算錯誤
         df["登記時數/節數"] = pd.to_numeric(df["登記時數/節數"], errors="coerce").fillna(0)
         
         col_a, col_b = st.columns(2)
