@@ -257,21 +257,24 @@ with tab3:
     st.subheader("📈 處室、項目與人員時數統計")
     if not st.session_state.records.empty:
         df = st.session_state.records.copy()
+        
+        # 先將「登記時數/節數」欄位統一轉為數字型態，避免運算錯誤
+        df["登記時數/節數"] = pd.to_numeric(df["登記時數/節數"], errors="coerce").fillna(0)
+        
         col_a, col_b = st.columns(2)
         with col_a:
             st.write("#### 1. 課研處累積申請總時數/節數")
-            st_dept = df.groupby("申請處室")["登記時數/節數"].astype(float).sum().reset_index()
+            st_dept = df.groupby("申請處室")["登記時數/節數"].sum().reset_index()
             st_dept.index = range(1, len(st_dept) + 1)
             st.dataframe(st_dept, use_container_width=True)
             
         with col_b:
             st.write("#### 2. 各計畫/活動型態分布")
-            st_act = df.groupby("活動型態")["登記時數/節數"].astype(float).sum().reset_index()
+            st_act = df.groupby("活動型態")["登記時數/節數"].sum().reset_index()
             st_act.index = range(1, len(st_act) + 1)
             st.dataframe(st_act, use_container_width=True)
 
         st.write("#### 3. 個人支領類別與總時數/節數")
-        df["登記時數/節數"] = df["登記時數/節數"].astype(float)
         st_person = df.groupby(["人員/耆老姓名", "支領類別"])["登記時數/節數"].sum().unstack(fill_value=0).reset_index()
         st_person.index = range(1, len(st_person) + 1)
         st.dataframe(st_person, use_container_width=True)
