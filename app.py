@@ -91,8 +91,22 @@ with st.sidebar.form("entry_form", clear_on_submit=True):
     activity_type = st.selectbox("活動/計畫型態", ["一般年級文化課", "校外參訪協同", "全校性大活動", "校本課程/研習研發", "行政支援/臨時工作"])
     grade_val = st.selectbox("適用年級/對象", ["全校", "一年級", "二年級", "三年級", "四年級", "五年級", "六年級"])
     teacher_val = st.text_input("主辦/授課教師", placeholder="例如：玉如老師 / 承彥老師")
+    
+    elder_input = st.text_input("人員 / 耆老姓名（若多位協同請用逗號隔開）", placeholder="例如：姜耆老, 羅耆老")
+    course_title = st.text_input("課程/工作項目名稱", placeholder="例如：舊北葉部落尋根參訪 / 傳統工藝協同")
+    
+    pay_category = st.selectbox("支領類別", [
+        "實驗教育授課鐘點費 (400元/節)", 
+        "沉浸式族語授課鐘點費 (405元/節)", 
+        "臨時工作費 (196元/小時，每月限15小時)"
+    ])
+    
+    hours_val = st.number_input("登記時數 / 節數 (每一位耆老個別認列)", min_value=0.5, max_value=20.0, value=1.0, step=0.5)
+    note_val = st.text_input("備註", placeholder="例如：課研處專案多位耆老同時入場協同")
+    
+    submitted = st.form_submit_button("新增紀錄")
+
 if submitted:
-    # 判斷是否填寫必填欄位
     if not teacher_val or not elder_input:
         st.sidebar.error("⚠️ 請填寫主辦/授課教師與人員/耆老姓名！")
     else:
@@ -103,7 +117,7 @@ if submitted:
         raw_elders = cleaned_input.split(",")
         elder_list = [e.strip() for e in raw_elders if e.strip()]
         
-        # 容錯機制：若清理後仍為空，預設使用原始輸入文字
+        # 保底機制：若清理後無結果，直接使用原輸入
         if not elder_list and elder_input.strip():
             elder_list = [elder_input.strip()]
             
@@ -135,28 +149,6 @@ if submitted:
             st.sidebar.success(f"✅ 已成功同步 {success_count} 筆紀錄至 Google 雲端！")
         else:
             st.sidebar.error("❌ 送出失敗，請檢查網路連線或表單設定。")
-                row_dict = {
-                    "日期": date_str,
-                    "申請處室": dept_val,
-                    "活動型態": activity_type,
-                    "年級班級": grade_val,
-                    "主辦/授課教師": teacher_val,
-                    "人員/耆老姓名": single_elder,
-                    "課程/活動/工作項目": course_title,
-                    "支領類別": pay_category,
-                    "登記時數/節數": hours_val,
-                    "備註": note_val
-                }
-                
-                if send_to_google_form(row_dict):
-                    success_count += 1
-            
-            # 給予 Google 試算表 2 秒鐘處理寫入
-            time.sleep(2)
-            st.cache_data.clear()
-            st.session_state.records = load_data_from_gsheets()
-
-        st.sidebar.success(f"✅ 已成功同步 {success_count} 筆紀錄至 Google 雲端！")
 
 tab1, tab2, tab3 = st.tabs(["📋 明細管理與編輯", "📊 自然月結與費用清冊", "📈 處室與人員時數統計"])
 
