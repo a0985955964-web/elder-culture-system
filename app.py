@@ -15,7 +15,7 @@ LIMIT_WORK_HOURS_MONTH = 15
 # 🔗 已為您設定好的 Google 表單與連動網址 (免 GCP 金鑰)
 # -----------------------------------------------------------------------------
 # 請將下方的 "你的試算表ID" 替換為您 Google 試算表網址中間的那串代碼
-SPREADSHEET_ID =1v95evJoAwJcorh_ZOLFcoYi9DchgwB_g2vvGAGC-FL8
+SPREADSHEET_ID =SPREADSHEET_ID = "1v95evJoAwJcorh_ZOLFcoYi9DchgwB_g2vvGAGC-FL8"
 CSV_READ_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/export?format=csv"
 
 # 表單發送網址
