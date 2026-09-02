@@ -6,3 +6,8 @@ pandas
 openpyxl
 gspread
 google-auth
+streamlit
+pandas
+openpyxl
+gspread
+google-auth
