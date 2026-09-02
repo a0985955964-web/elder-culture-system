@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import datetime
 import requests
+import time
 
 # 設定頁面標題與佈局
 st.set_page_config(page_title="課研處 - 文化協同耆老與工作費管理系統", layout="wide")
@@ -12,16 +13,15 @@ RATE_WORK_FEE = 196
 LIMIT_WORK_HOURS_MONTH = 15
 
 # -----------------------------------------------------------------------------
-# 🔗 已為您設定好的 Google 表單與連動網址 (免 GCP 金鑰)
+# 🔗 已設定好的 Google 表單與連動網址
 # -----------------------------------------------------------------------------
-# 請將下方的 "你的試算表ID" 替換為您 Google 試算表網址中間的那串代碼
-SPREADSHEET_ID =SPREADSHEET_ID = "1v95evJoAwJcorh_ZOLFcoYi9DchgwB_g2vvGAGC-FL8"
+SPREADSHEET_ID = "1v95evJoAwJcorh_ZOLFcoYi9DchgwB_g2vvGAGC-FL8"
 CSV_READ_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/export?format=csv"
 
 # 表單發送網址
 FORM_RESPONSE_URL = "https://docs.google.com/forms/u/0/d/e/1FAIpQLSezslon8cEj-oz3jTightu8mlbYgDZM_4g0oSc2FiIGb2pE0A/formResponse"
 
-# 從您提供的原始碼解析出之 10 個欄位 Entry ID
+# 從原始碼解析出之 10 個欄位 Entry ID
 ENTRY_MAP = {
     "日期": "entry.473107486",
     "申請處室": "entry.1727400163",
@@ -40,42 +40,46 @@ COLUMNS = [
     "日期", "申請處室", "活動型態", "年級班級", "主辦/授課教師", "人員/耆老姓名", "課程/活動/工作項目", "支領類別", "登記時數/節數", "備註"
 ]
 
-# 自動從 Google 試算表讀取歷史紀錄
+# 自動從 Google 試算表讀取歷史紀錄 (使用 ttl 確保快取不會鎖死)
+@st.cache_data(ttl=2)
 def load_data_from_gsheets():
     try:
-        df = pd.read_csv(CSV_READ_URL)
-        # 忽略表單產生的時間戳記
+        # 加上時間戳記防止 HTTP 快取
+        url_with_ts = f"{CSV_READ_URL}&_ts={int(time.time())}"
+        df = pd.read_csv(url_with_ts)
+        # 忽略表單產生的時間戳記欄位
         if "時間戳記" in df.columns:
             df = df.drop(columns=["時間戳記"])
         for col in COLUMNS:
             if col not in df.columns:
                 df[col] = ""
         return df[COLUMNS]
-    except Exception:
+    except Exception as e:
         return pd.DataFrame(columns=COLUMNS)
 
-# 發送數據至 Google 表單 (進而自動寫入雲端試算表)
+# 發送數據至 Google 表單 (寫入雲端試算表)
 def send_to_google_form(row_data):
     form_data = {}
     for col_name, entry_id in ENTRY_MAP.items():
         form_data[entry_id] = str(row_data.get(col_name, ""))
     try:
-        res = requests.post(FORM_RESPONSE_URL, data=form_data)
+        res = requests.post(FORM_RESPONSE_URL, data=form_data, timeout=10)
         return res.status_code == 200
-    except Exception:
+    except Exception as e:
         return False
-
-# 初始化：開網頁自動載入歷史資料
-if 'records' not in st.session_state:
-    st.session_state.records = load_data_from_gsheets()
 
 st.title("🌾 課研處 - 文化協同耆老時數、鐘點費與工作費管理系統")
 
-st.success("🟢 系統連線成功！填寫資料將透過表單機制全自動寫入 Google 雲端試算表。")
+st.success("🟢 系統連線成功！資料將自動寫入 Google 雲端試算表。")
 
 if st.button("🔄 重新載入雲端試算表最新資料"):
+    st.cache_data.clear()
     st.session_state.records = load_data_from_gsheets()
     st.rerun()
+
+# 初始化資料載入
+if 'records' not in st.session_state:
+    st.session_state.records = load_data_from_gsheets()
 
 st.sidebar.header("📝 登錄耆老協同 / 臨時工作費紀錄")
 
@@ -107,41 +111,43 @@ if submitted:
         st.sidebar.error("⚠️ 請填寫主辦/授課教師與人員/耆老姓名！")
     else:
         date_str = date_val.strftime("%Y-%m-%d")
-        month_str = date_val.strftime("%Y-%m")
         
         raw_elders = elder_input.replace("、", ",").replace(" ", "").split(",")
         elder_list = [e.strip() for e in raw_elders if e.strip()]
         
         success_count = 0
-        for single_elder in elder_list:
-            row_dict = {
-                "日期": date_str,
-                "申請處室": dept_val,
-                "活動型態": activity_type,
-                "年級班級": grade_val,
-                "主辦/授課教師": teacher_val,
-                "人員/耆老姓名": single_elder,
-                "課程/活動/工作項目": course_title,
-                "支領類別": pay_category,
-                "登記時數/節數": hours_val,
-                "備註": note_val
-            }
-            
-            # 背後發送給 Google 表單並自動填入試算表
-            if send_to_google_form(row_dict):
-                success_count += 1
+        with st.spinner("⏳ 正在將紀錄同步寫入 Google 雲端..."):
+            for single_elder in elder_list:
+                row_dict = {
+                    "日期": date_str,
+                    "申請處室": dept_val,
+                    "活動型態": activity_type,
+                    "年級班級": grade_val,
+                    "主辦/授課教師": teacher_val,
+                    "人員/耆老姓名": single_elder,
+                    "課程/活動/工作項目": course_title,
+                    "支領類別": pay_category,
+                    "登記時數/節數": hours_val,
+                    "備註": note_val
+                }
                 
-        st.sidebar.success(f"✅ 已成功將 {success_count} 筆紀錄同步存入 Google 雲端！")
-        # 重新讀取雲端試算表更新頁面
-        st.session_state.records = load_data_from_gsheets()
-        st.rerun()
+                if send_to_google_form(row_dict):
+                    success_count += 1
+            
+            # 給予 Google 試算表 2 秒鐘處理寫入
+            time.sleep(2)
+            st.cache_data.clear()
+            st.session_state.records = load_data_from_gsheets()
+
+        st.sidebar.success(f"✅ 已成功同步 {success_count} 筆紀錄至 Google 雲端！")
 
 tab1, tab2, tab3 = st.tabs(["📋 明細管理與編輯", "📊 自然月結與費用清冊", "📈 處室與人員時數統計"])
 
 with tab1:
     st.subheader("明細資料表")
-    if not st.session_state.records.empty:
-        display_df = st.session_state.records.copy()
+    records_df = load_data_from_gsheets()
+    if not records_df.empty:
+        display_df = records_df.copy()
         display_df.index = range(1, len(display_df) + 1)
         st.dataframe(display_df, use_container_width=True)
     else:
@@ -149,8 +155,8 @@ with tab1:
 
 with tab2:
     st.subheader("🗓️ 自然月結算與費用分攤清冊")
-    if not st.session_state.records.empty:
-        df = st.session_state.records.copy()
+    df = load_data_from_gsheets()
+    if not df.empty:
         df["月份"] = pd.to_datetime(df["日期"], errors="coerce").dt.strftime("%Y-%m")
         month_list = sorted([m for m in df["月份"].unique() if pd.notna(m)])
         
@@ -236,8 +242,8 @@ with tab2:
 
 with tab3:
     st.subheader("📈 處室、項目與人員時數統計")
-    if not st.session_state.records.empty:
-        df = st.session_state.records.copy()
+    df = load_data_from_gsheets()
+    if not df.empty:
         df["登記時數/節數"] = pd.to_numeric(df["登記時數/節數"], errors="coerce").fillna(0)
         
         col_a, col_b = st.columns(2)
