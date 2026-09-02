@@ -12,44 +12,40 @@ RATE_IMMERSIVE = 405         # 沉浸式族語鐘點費 (元/節)
 RATE_WORK_FEE = 196          # 臨時工作費時薪 (元/小時)
 LIMIT_WORK_HOURS_MONTH = 15  # 工作費每月上限時數 (小時/月)
 
-# 定義永久儲存的檔案名稱
-DATA_FILE = "data_records.csv"
-
-# 定義表格標準欄位
 COLUMNS = [
     "日期", "申請處室", "活動型態", "年級班級", "主辦/授課教師", "人員/耆老姓名", "課程/活動/工作項目", "支領類別", "登記時數/節數", "備註"
 ]
 
-# 輔助函式：讀取硬碟中的資料
-def load_data():
-    if os.path.exists(DATA_FILE):
-        try:
-            df = pd.read_csv(DATA_FILE, encoding="utf-8-sig")
-            # 確保欄位齊全
-            for col in COLUMNS:
-                if col not in df.columns:
-                    df[col] = ""
-            return df[COLUMNS]
-        except Exception:
-            return pd.DataFrame(columns=COLUMNS)
-    else:
-        return pd.DataFrame(columns=COLUMNS)
-
-# 輔助函式：將資料寫入硬碟
-def save_data(df):
-    df.to_csv(DATA_FILE, index=False, encoding="utf-8-sig")
-
 # 初始化 session_state
 if 'records' not in st.session_state:
-    st.session_state.records = load_data()
+    st.session_state.records = pd.DataFrame(columns=COLUMNS)
 
 st.title("🌾 課研處 - 文化協同耆老時數、鐘點費與工作費管理系統")
 
+# 側邊欄：備份與還原功能（連結雲端硬碟必備）
+st.sidebar.header("☁️ 雲端備份與歷史還原")
+
+uploaded_file = st.sidebar.file_uploader("📤 上傳歷史備份檔 (CSV/Excel)", type=["csv", "xlsx"])
+if uploaded_file is not None:
+    try:
+        if uploaded_file.name.endswith('.csv'):
+            imported_df = pd.read_csv(uploaded_file, encoding="utf-8-sig")
+        else:
+            imported_df = pd.read_excel(uploaded_file)
+            
+        for col in COLUMNS:
+            if col not in imported_df.columns:
+                imported_df[col] = ""
+        st.session_state.records = imported_df[COLUMNS]
+        st.sidebar.success("✅ 歷史紀錄已成功匯入！")
+    except Exception as e:
+        st.sidebar.error("⚠️ 檔案讀取失敗，請確認格式。")
+
+st.sidebar.markdown("---")
 st.sidebar.header("📝 登錄耆老協同 / 臨時工作費紀錄")
 
 with st.sidebar.form("entry_form", clear_on_submit=True):
     date_val = st.date_input("授課/工作日期", datetime.date.today())
-    
     dept_val = "課研處"
     st.text_input("申請處室", value=dept_val, disabled=True)
     
@@ -108,15 +104,12 @@ if submitted:
             
         new_data = pd.DataFrame(new_rows)
         st.session_state.records = pd.concat([st.session_state.records, new_data], ignore_index=True)
-        
-        # 存入檔案
-        save_data(st.session_state.records)
-        st.sidebar.success(f"✅ 已成功新增並存檔 {len(elder_list)} 筆紀錄！")
+        st.sidebar.success(f"✅ 已成功新增 {len(elder_list)} 筆紀錄！")
 
 tab1, tab2, tab3 = st.tabs(["📋 明細管理與編輯", "📊 自然月結與費用清冊", "📈 處室與人員時數統計"])
 
 with tab1:
-    st.subheader("明細資料表（可直接於表格內編輯，修改後請點擊下方「儲存修改」）")
+    st.subheader("明細資料表（可直接編輯修改）")
     if not st.session_state.records.empty:
         display_df = st.session_state.records.copy()
         display_df.index = range(1, len(display_df) + 1)
@@ -128,40 +121,39 @@ with tab1:
             key="records_editor"
         )
         
+        st.session_state.records = edited_df.reset_index(drop=True)
+        
         col_btn1, col_btn2 = st.columns([1, 4])
         with col_btn1:
-            if st.button("💾 儲存修改的內容"):
-                st.session_state.records = edited_df.reset_index(drop=True)
-                save_data(st.session_state.records)
-                st.success("✅ 資料已成功儲存！")
-                st.rerun()
-                
+            # 隨時備份導出
+            csv_data = st.session_state.records.to_csv(index=False, encoding="utf-8-sig")
+            st.download_button(
+                label="📥 下載資料庫備份檔 (存至 Google Drive)",
+                data=csv_data,
+                file_name=f"課研處耆老與工作費資料庫_{datetime.date.today()}.csv",
+                mime="text/csv"
+            )
+            
         with col_btn2:
             if st.button("🗑️ 清空所有紀錄（慎用）"):
                 st.session_state.records = pd.DataFrame(columns=COLUMNS)
-                save_data(st.session_state.records)
-                st.success("✅ 所有紀錄已清空！")
                 st.rerun()
     else:
-        st.info("目前尚無登記紀錄，請由左側邊欄輸入資料。")
+        st.info("目前尚無登記紀錄，請由左側邊欄輸入資料，或上傳歷史備份檔。")
 
 with tab2:
     st.subheader("🗓️ 自然月結算與費用分攤清冊")
-    
     if not st.session_state.records.empty:
         df = st.session_state.records.copy()
         df["月份"] = pd.to_datetime(df["日期"]).dt.strftime("%Y-%m")
-        
         month_list = sorted(df["月份"].unique())
         selected_month = st.selectbox("選擇結算月份", month_list)
         
         m_df = df[df["月份"] == selected_month].copy()
-        
         summary_list = []
         for idx, row in m_df.iterrows():
             h = float(row["登記時數/節數"]) if row["登記時數/節數"] else 0.0
             p_cat = row["支領類別"]
-            
             exp_h, imm_h, work_h = 0.0, 0.0, 0.0
             
             if "沉浸式" in str(p_cat):
@@ -186,13 +178,8 @@ with tab2:
         summary_df = pd.DataFrame(summary_list)
         if not summary_df.empty:
             final_person_summary = summary_df.groupby("人員/耆老姓名").agg({
-                "沉浸式節數": "sum",
-                "實驗教育節數": "sum",
-                "工作費小時數": "sum",
-                "沉浸式金額": "sum",
-                "實驗教育金額": "sum",
-                "工作費金額": "sum",
-                "總金額": "sum"
+                "沉浸式節數": "sum", "實驗教育節數": "sum", "工作費小時數": "sum",
+                "沉浸式金額": "sum", "實驗教育金額": "sum", "工作費金額": "sum", "總金額": "sum"
             }).reset_index()
             
             final_person_summary["工作費狀態"] = final_person_summary["工作費小時數"].apply(
@@ -200,10 +187,7 @@ with tab2:
             )
             
             dept_summary = summary_df.groupby("申請處室").agg({
-                "沉浸式金額": "sum",
-                "實驗教育金額": "sum",
-                "工作費金額": "sum",
-                "總金額": "sum"
+                "沉浸式金額": "sum", "實驗教育金額": "sum", "工作費金額": "sum", "總金額": "sum"
             }).reset_index()
             
             final_person_summary.index = range(1, len(final_person_summary) + 1)
@@ -244,7 +228,6 @@ with tab3:
     st.subheader("📈 處室、項目與人員時數統計")
     if not st.session_state.records.empty:
         df = st.session_state.records.copy()
-        
         col_a, col_b = st.columns(2)
         with col_a:
             st.write("#### 1. 課研處累積申請總時數/節數")
