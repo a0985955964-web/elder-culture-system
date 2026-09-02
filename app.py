@@ -1,8 +1,6 @@
 import streamlit as st
 import pandas as pd
 import datetime
-import gspread
-from google.oauth2.service_account import Credentials
 
 # 設定頁面標題與佈局
 st.set_page_config(page_title="課研處 - 文化協同耆老與工作費管理系統", layout="wide")
@@ -16,57 +14,36 @@ COLUMNS = [
     "日期", "申請處室", "活動型態", "年級班級", "主辦/授課教師", "人員/耆老姓名", "課程/活動/工作項目", "支領類別", "登記時數/節數", "備註"
 ]
 
-# 嘗試初始化 Google Sheets 寫入權限
-@st.cache_resource
-def init_gsheets():
-    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-    creds_dict = st.secrets["gcp_service_account"]
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    client = gspread.authorize(creds)
-    sheet_url = st.secrets["spreadsheet_url"]
-    sh = client.open_by_url(sheet_url)
-    return sh.sheet1
-
-try:
-    ws = init_gsheets()
-    gsheets_connected = True
-except Exception:
-    gsheets_connected = False
-
-def load_data():
-    if gsheets_connected:
-        try:
-            records = ws.get_all_records()
-            df = pd.DataFrame(records)
-            for col in COLUMNS:
-                if col not in df.columns:
-                    df[col] = ""
-            return df[COLUMNS]
-        except Exception:
-            return pd.DataFrame(columns=COLUMNS)
-    else:
-        if 'records' in st.session_state:
-            return st.session_state.records
-        return pd.DataFrame(columns=COLUMNS)
-
-def save_all_to_sheets(df):
-    if gsheets_connected:
-        ws.clear()
-        ws.append_row(COLUMNS)
-        if not df.empty:
-            ws.append_rows(df.astype(str).values.tolist())
-
 # 初始化 session
-if 'records' not in st.session_state or gsheets_connected:
-    st.session_state.records = load_data()
+if 'records' not in st.session_state:
+    st.session_state.records = pd.DataFrame(columns=COLUMNS)
 
 st.title("🌾 課研處 - 文化協同耆老時數、鐘點費與工作費管理系統")
 
-if gsheets_connected:
-    st.success("🟢 雲端連線狀態：已雙向同步連線至 Google 試算表！新增紀錄會即時自動寫入雲端。")
-else:
-    st.warning("🟠 雲端連線狀態：未設定 gcp_service_account 寫入金鑰，目前新增資料僅為單次暫存。")
+# 側邊欄：匯入雲端 CSV
+st.sidebar.header("☁️ 雲端資料同步與備份")
+sheet_csv_url = st.sidebar.text_input("輸入 Google 試算表 CSV 連結 (可自動載入)", value="")
 
+if st.sidebar.button("🔄 從 Google 試算表載入資料"):
+    if sheet_csv_url:
+        try:
+            # 轉換為 CSV 下載連結
+            if "/edit" in sheet_csv_url:
+                sheet_id = sheet_csv_url.split('/d/')[1].split('/')[0]
+                csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+            else:
+                csv_url = sheet_csv_url
+                
+            df_cloud = pd.read_csv(csv_url)
+            for col in COLUMNS:
+                if col not in df_cloud.columns:
+                    df_cloud[col] = ""
+            st.session_state.records = df_cloud[COLUMNS]
+            st.sidebar.success("✅ 已成功從 Google 試算表載入歷史資料！")
+        except Exception as e:
+            st.sidebar.error("⚠️ 載入失敗，請確認試算表已開啟「知道連結的人皆可存取」權限。")
+
+st.sidebar.markdown("---")
 st.sidebar.header("📝 登錄耆老協同 / 臨時工作費紀錄")
 
 with st.sidebar.form("entry_form", clear_on_submit=True):
@@ -114,7 +91,7 @@ if submitted:
                 if existing_work_hrs + hours_val > LIMIT_WORK_HOURS_MONTH:
                     st.warning(f"⚠️ 警示：【{single_elder}】在【{month_str} 月】已有 {existing_work_hrs} 小時工作費紀錄！加上本次 {hours_val} 小時將超過每月 15 小時上限。")
             
-            row_dict = {
+            new_rows.append({
                 "日期": date_str,
                 "申請處室": dept_val,
                 "活動型態": activity_type,
@@ -125,16 +102,11 @@ if submitted:
                 "支領類別": pay_category,
                 "登記時數/節數": hours_val,
                 "備註": note_val
-            }
-            new_rows.append(row_dict)
+            })
             
-            if gsheets_connected:
-                ws.append_row([str(row_dict[c]) for c in COLUMNS])
-                
         new_data = pd.DataFrame(new_rows)
         st.session_state.records = pd.concat([st.session_state.records, new_data], ignore_index=True)
-        st.sidebar.success(f"✅ 已成功新增並即時同步 {len(elder_list)} 筆紀錄至 Google 雲端！")
-        st.rerun()
+        st.sidebar.success(f"✅ 已成功新增 {len(elder_list)} 筆紀錄！")
 
 tab1, tab2, tab3 = st.tabs(["📋 明細管理與編輯", "📊 自然月結與費用清冊", "📈 處室與人員時數統計"])
 
@@ -151,19 +123,21 @@ with tab1:
             key="records_editor"
         )
         
+        st.session_state.records = edited_df.reset_index(drop=True)
+        
         col_btn1, col_btn2 = st.columns([1, 4])
         with col_btn1:
-            if st.button("💾 儲存修改內容至 Google 雲端"):
-                st.session_state.records = edited_df.reset_index(drop=True)
-                save_all_to_sheets(st.session_state.records)
-                st.success("✅ 修改已成功同步至 Google 試算表！")
-                st.rerun()
-                
+            csv_data = st.session_state.records.to_csv(index=False, encoding="utf-8-sig")
+            st.download_button(
+                label="📥 下載全表 CSV (備份用)",
+                data=csv_data,
+                file_name=f"課研處資料庫_{datetime.date.today()}.csv",
+                mime="text/csv"
+            )
+            
         with col_btn2:
             if st.button("🗑️ 清空所有紀錄（慎用）"):
                 st.session_state.records = pd.DataFrame(columns=COLUMNS)
-                save_all_to_sheets(st.session_state.records)
-                st.success("✅ 所有紀錄已清空！")
                 st.rerun()
     else:
         st.info("目前尚無登記紀錄，請由左側邊欄輸入資料。")
