@@ -14,36 +14,44 @@ COLUMNS = [
     "日期", "申請處室", "活動型態", "年級班級", "主辦/授課教師", "人員/耆老姓名", "課程/活動/工作項目", "支領類別", "登記時數/節數", "備註"
 ]
 
-# 初始化 session
+has_url = "spreadsheet_url" in st.secrets
+
+# 取得 Google 試算表 CSV 下載連結 (讀取用)
+def get_csv_url():
+    raw_url = st.secrets["spreadsheet_url"]
+    sheet_id = raw_url.split('/d/')[1].split('/')[0]
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+
+# 1. 每次開啟自動從 Google 試算表讀取舊紀錄
+def load_data_from_google():
+    if has_url:
+        try:
+            csv_url = get_csv_url()
+            df = pd.read_csv(csv_url)
+            for col in COLUMNS:
+                if col not in df.columns:
+                    df[col] = ""
+            return df[COLUMNS]
+        except Exception:
+            return pd.DataFrame(columns=COLUMNS)
+    return pd.DataFrame(columns=COLUMNS)
+
+# 初始化：開網頁時讀取歷史資料
 if 'records' not in st.session_state:
-    st.session_state.records = pd.DataFrame(columns=COLUMNS)
+    st.session_state.records = load_data_from_google()
 
 st.title("🌾 課研處 - 文化協同耆老時數、鐘點費與工作費管理系統")
 
-# 側邊欄：匯入雲端 CSV
-st.sidebar.header("☁️ 雲端資料同步與備份")
-sheet_csv_url = st.sidebar.text_input("輸入 Google 試算表 CSV 連結 (可自動載入)", value="")
+if has_url:
+    st.success("🟢 雲端連線狀態：已連線至 Google 試算表！新增與修改將同步存回雲端。")
+else:
+    st.error("🔴 未設定 Google 試算表網址，請先至 Streamlit Secrets 設定 `spreadsheet_url`！")
 
-if st.sidebar.button("🔄 從 Google 試算表載入資料"):
-    if sheet_csv_url:
-        try:
-            # 轉換為 CSV 下載連結
-            if "/edit" in sheet_csv_url:
-                sheet_id = sheet_csv_url.split('/d/')[1].split('/')[0]
-                csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
-            else:
-                csv_url = sheet_csv_url
-                
-            df_cloud = pd.read_csv(csv_url)
-            for col in COLUMNS:
-                if col not in df_cloud.columns:
-                    df_cloud[col] = ""
-            st.session_state.records = df_cloud[COLUMNS]
-            st.sidebar.success("✅ 已成功從 Google 試算表載入歷史資料！")
-        except Exception as e:
-            st.sidebar.error("⚠️ 載入失敗，請確認試算表已開啟「知道連結的人皆可存取」權限。")
+# 按鈕：手動刷新（重新載入雲端資料）
+if st.button("🔄 重新整理並載入 Google 試算表最新資料"):
+    st.session_state.records = load_data_from_google()
+    st.rerun()
 
-st.sidebar.markdown("---")
 st.sidebar.header("📝 登錄耆老協同 / 臨時工作費紀錄")
 
 with st.sidebar.form("entry_form", clear_on_submit=True):
@@ -127,9 +135,10 @@ with tab1:
         
         col_btn1, col_btn2 = st.columns([1, 4])
         with col_btn1:
+            # 匯出 CSV 按鈕，可將最新整表下載下來貼回 Google 試算表備份
             csv_data = st.session_state.records.to_csv(index=False, encoding="utf-8-sig")
             st.download_button(
-                label="📥 下載全表 CSV (備份用)",
+                label="📥 下載最新 CSV 資料 (同步至 Google 試算表)",
                 data=csv_data,
                 file_name=f"課研處資料庫_{datetime.date.today()}.csv",
                 mime="text/csv"
