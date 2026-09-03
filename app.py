@@ -19,7 +19,7 @@ SPREADSHEET_ID = "1v95evJoAwJcorh_ZOLFcoYi9DchgwB_g2vvGAGC-FL8"
 CSV_READ_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/export?format=csv"
 
 # 表單發送網址
-FORM_RESPONSE_URL = "https://docs.google.com/forms/u/0/d/e/1FAIpQLSezslon8cEj-oz3jTightu8mlbYgDZM_4g0oSc2FiIGb2pE0A/formResponse"
+FORM_RESPONSE_URL = "https://docs.google.com/forms/d/e/1FAIpQLSezslon8cEj-oz3jTightu8mlbYgDZM_4g0oSc2FiIGb2pE0A/formResponse"
 
 # 從原始碼解析出之 10 個欄位 Entry ID
 ENTRY_MAP = {
@@ -40,14 +40,12 @@ COLUMNS = [
     "日期", "申請處室", "活動型態", "年級班級", "主辦/授課教師", "人員/耆老姓名", "課程/活動/工作項目", "支領類別", "登記時數/節數", "備註"
 ]
 
-# 自動從 Google 試算表讀取歷史紀錄 (使用 ttl 確保快取不會鎖死)
+# 自動從 Google 試算表讀取歷史紀錄
 @st.cache_data(ttl=2)
 def load_data_from_gsheets():
     try:
-        # 加上時間戳記防止 HTTP 快取
         url_with_ts = f"{CSV_READ_URL}&_ts={int(time.time())}"
         df = pd.read_csv(url_with_ts)
-        # 忽略表單產生的時間戳記欄位
         if "時間戳記" in df.columns:
             df = df.drop(columns=["時間戳記"])
         for col in COLUMNS:
@@ -57,7 +55,7 @@ def load_data_from_gsheets():
     except Exception as e:
         return pd.DataFrame(columns=COLUMNS)
 
-# 發送數據至 Google 表單 (寫入雲端試算表)
+# 發送數據至 Google 表單
 def send_to_google_form(row_data):
     form_data = {}
     for col_name, entry_id in ENTRY_MAP.items():
@@ -77,10 +75,16 @@ if st.button("🔄 重新載入雲端試算表最新資料"):
     st.session_state.records = load_data_from_gsheets()
     st.rerun()
 
-# 初始化資料載入
 if 'records' not in st.session_state:
     st.session_state.records = load_data_from_gsheets()
 
+# -----------------------------------------------------------------------------
+# ⚙️ 側邊欄：教師配額與填單登錄
+# -----------------------------------------------------------------------------
+st.sidebar.header("🎯 教師協同節數上限設定")
+default_quota = st.sidebar.number_input("每位教師預設協同總額度 (節)", min_value=1, max_value=100, value=12, step=1)
+
+st.sidebar.markdown("---")
 st.sidebar.header("📝 登錄耆老協同 / 臨時工作費紀錄")
 
 with st.sidebar.form("entry_form", clear_on_submit=True):
@@ -112,12 +116,10 @@ if submitted:
     else:
         date_str = date_val.strftime("%Y-%m-%d")
         
-        # 強化姓名清理邏輯：支援全形/半形逗號、頓號、分號與斜線
         cleaned_input = elder_input.replace("、", ",").replace("；", ",").replace(";", ",").replace("/", ",").replace(" ", ",")
         raw_elders = cleaned_input.split(",")
         elder_list = [e.strip() for e in raw_elders if e.strip()]
         
-        # 保底機制：若清理後無結果，直接使用原輸入
         if not elder_list and elder_input.strip():
             elder_list = [elder_input.strip()]
             
@@ -140,7 +142,6 @@ if submitted:
                 if send_to_google_form(row_dict):
                     success_count += 1
             
-            # 給予 Google 試算表寫入緩衝時間
             time.sleep(1.5)
             st.cache_data.clear()
             st.session_state.records = load_data_from_gsheets()
@@ -150,7 +151,10 @@ if submitted:
         else:
             st.sidebar.error("❌ 送出失敗，請檢查網路連線或表單設定。")
 
-tab1, tab2, tab3 = st.tabs(["📋 明細管理與編輯", "📊 自然月結與費用清冊", "📈 處室與人員時數統計"])
+# -----------------------------------------------------------------------------
+# 📊 分頁呈現
+# -----------------------------------------------------------------------------
+tab1, tab2, tab3, tab4 = st.tabs(["📋 明細管理", "🎯 授課教師協同節數控管", "📊 自然月結與費用清冊", "📈 處室與人員時數統計"])
 
 with tab1:
     st.subheader("明細資料表")
@@ -162,7 +166,55 @@ with tab1:
     else:
         st.info("目前尚無登記紀錄，請由左側邊欄輸入資料。")
 
+# 🌟 新增：授課教師協同節數剩餘控管頁面
 with tab2:
+    st.subheader("🎯 各授課教師「協同耆老節數」使用與剩餘控管")
+    df = load_data_from_gsheets()
+    
+    if not df.empty:
+        df["登記時數/節數"] = pd.to_numeric(df["登記時數/節數"], errors="coerce").fillna(0)
+        # 過濾出協同耆老之鐘點費類別 (排除臨時工作費)
+        elder_df = df[df["支領類別"].str.contains("鐘點費|授課", na=False)]
+        
+        if not elder_df.empty:
+            teacher_summary = elder_df.groupby("主辦/授課教師")["登記時數/節數"].sum().reset_index()
+            teacher_summary.columns = ["授課教師", "已使用協同節數"]
+            
+            # 計算剩餘額度與狀態
+            teacher_summary["總額度 (節)"] = default_quota
+            teacher_summary["剩餘協同節數 (節)"] = teacher_summary["總額度 (節)"] - teacher_summary["已使用協同節數"]
+            
+            def get_status(remaining):
+                if remaining < 0:
+                    return f"🔴 已超出 {-remaining:.1f} 節"
+                elif remaining <= 2:
+                    return f"🟡 僅剩 {remaining:.1f} 節 (快滿)"
+                else:
+                    return "🟢 額度正常"
+            
+            teacher_summary["狀態提示"] = teacher_summary["剩餘協同節數 (節)"].apply(get_status)
+            teacher_summary.index = range(1, len(teacher_summary) + 1)
+            
+            st.dataframe(teacher_summary, use_container_width=True)
+            
+            # 數據卡片直觀呈現
+            st.markdown("#### 📌 各教師即時卡片")
+            cols = st.columns(min(len(teacher_summary), 4))
+            for idx, row in teacher_summary.iterrows():
+                col_idx = (idx - 1) % 4
+                with cols[col_idx]:
+                    st.metric(
+                        label=f"👨‍🏫 {row['授課教師']}",
+                        value=f"剩 {row['剩餘協同節數 (節)']} 節",
+                        delta=f"已用 {row['已使用協同節數']} / 總額 {row['總額度 (節)']} 節",
+                        delta_color="normal" if row['剩餘協同節數 (節)'] >= 0 else "inverse"
+                    )
+        else:
+            st.info("目前尚無協同耆老之授課紀錄。")
+    else:
+        st.info("尚無資料可供計算。")
+
+with tab3:
     st.subheader("🗓️ 自然月結算與費用分攤清冊")
     df = load_data_from_gsheets()
     if not df.empty:
@@ -249,7 +301,7 @@ with tab2:
     else:
         st.info("尚無統計數據。")
 
-with tab3:
+with tab4:
     st.subheader("📈 處室、項目與人員時數統計")
     df = load_data_from_gsheets()
     if not df.empty:
