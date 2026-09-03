@@ -82,7 +82,14 @@ if 'records' not in st.session_state:
 # ⚙️ 側邊欄：教師配額與填單登錄
 # -----------------------------------------------------------------------------
 st.sidebar.header("🎯 教師協同節數上限設定")
-default_quota = st.sidebar.number_input("每位教師預設協同總額度 (節)", min_value=1, max_value=100, value=12, step=1)
+default_quota = st.sidebar.number_input("一般教師預設協同總額度 (節)", min_value=1, max_value=100, value=12, step=1)
+
+# 特定教師專屬額度表
+SPECIAL_QUOTAS = {
+    "承彥老師": 72,
+    "宋承彥": 72,
+    "承彥": 72
+}
 
 st.sidebar.markdown("---")
 st.sidebar.header("📝 登錄耆老協同 / 臨時工作費紀錄")
@@ -166,28 +173,34 @@ with tab1:
     else:
         st.info("目前尚無登記紀錄，請由左側邊欄輸入資料。")
 
-# 🌟 新增：授課教師協同節數剩餘控管頁面
+# 🎯 授課教師協同節數剩餘控管頁面
 with tab2:
     st.subheader("🎯 各授課教師「協同耆老節數」使用與剩餘控管")
     df = load_data_from_gsheets()
     
     if not df.empty:
         df["登記時數/節數"] = pd.to_numeric(df["登記時數/節數"], errors="coerce").fillna(0)
-        # 過濾出協同耆老之鐘點費類別 (排除臨時工作費)
+        # 過濾出協同耆老之鐘點費類別
         elder_df = df[df["支領類別"].str.contains("鐘點費|授課", na=False)]
         
         if not elder_df.empty:
             teacher_summary = elder_df.groupby("主辦/授課教師")["登記時數/節數"].sum().reset_index()
             teacher_summary.columns = ["授課教師", "已使用協同節數"]
             
-            # 計算剩餘額度與狀態
-            teacher_summary["總額度 (節)"] = default_quota
+            # 動態匹配專屬額度或預設額度
+            def assign_quota(t_name):
+                for k, v in SPECIAL_QUOTAS.items():
+                    if k in str(t_name):
+                        return v
+                return default_quota
+
+            teacher_summary["總額度 (節)"] = teacher_summary["授課教師"].apply(assign_quota)
             teacher_summary["剩餘協同節數 (節)"] = teacher_summary["總額度 (節)"] - teacher_summary["已使用協同節數"]
             
             def get_status(remaining):
                 if remaining < 0:
                     return f"🔴 已超出 {-remaining:.1f} 節"
-                elif remaining <= 2:
+                elif remaining <= 5:
                     return f"🟡 僅剩 {remaining:.1f} 節 (快滿)"
                 else:
                     return "🟢 額度正常"
