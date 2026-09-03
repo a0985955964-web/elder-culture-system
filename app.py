@@ -40,6 +40,46 @@ COLUMNS = [
     "日期", "申請處室", "活動型態", "年級班級", "主辦/授課教師", "人員/耆老姓名", "課程/活動/工作項目", "支領類別", "登記時數/節數", "備註"
 ]
 
+# 各年級、各教師之單獨配額設定
+GRADE_QUOTAS = {
+    "一年級": {
+        "玉如": 36,
+        "玉英": 6,
+        "代課": 12
+    },
+    "二年級": {
+        "媛晨": 24,
+        "信勇": 24,
+        "丹妮": 6
+    },
+    "三年級": {
+        "貴雪": 18,
+        "蔚銘": 18,
+        "述帆": 12,
+        "代課": 12
+    },
+    "四年級": {
+        "媛晨": 24,
+        "宜婷": 18,
+        "代課": 24
+    },
+    "五年級": {
+        "媛晨": 24,
+        "美玲": 12,
+        "正輝": 12,
+        "代課": 12
+    },
+    "六年級": {
+        "晨皓": 36,
+        "富傑": 12,
+        "思蘋": 12
+    },
+    "全校": {
+        "承彥": 72,
+        "宋承彥": 72
+    }
+}
+
 # 自動從 Google 試算表讀取歷史紀錄
 @st.cache_data(ttl=2)
 def load_data_from_gsheets():
@@ -79,19 +119,8 @@ if 'records' not in st.session_state:
     st.session_state.records = load_data_from_gsheets()
 
 # -----------------------------------------------------------------------------
-# ⚙️ 側邊欄：教師配額與填單登錄
+# ⚙️ 側邊欄：登錄紀錄
 # -----------------------------------------------------------------------------
-st.sidebar.header("🎯 教師協同節數上限設定")
-default_quota = st.sidebar.number_input("一般教師預設協同總額度 (節)", min_value=1, max_value=100, value=12, step=1)
-
-# 特定教師專屬額度表
-SPECIAL_QUOTAS = {
-    "承彥老師": 72,
-    "宋承彥": 72,
-    "承彥": 72
-}
-
-st.sidebar.markdown("---")
 st.sidebar.header("📝 登錄耆老協同 / 臨時工作費紀錄")
 
 with st.sidebar.form("entry_form", clear_on_submit=True):
@@ -100,7 +129,7 @@ with st.sidebar.form("entry_form", clear_on_submit=True):
     st.text_input("申請處室", value=dept_val, disabled=True)
     
     activity_type = st.selectbox("活動/計畫型態", ["一般年級文化課", "校外參訪協同", "全校性大活動", "校本課程/研習研發", "行政支援/臨時工作"])
-    grade_val = st.selectbox("適用年級/對象", ["全校", "一年級", "二年級", "三年級", "四年級", "五年級", "六年級"])
+    grade_val = st.selectbox("適用年級/對象", ["一年級", "二年級", "三年級", "四年級", "五年級", "六年級", "全校"])
     teacher_val = st.text_input("主辦/授課教師", placeholder="例如：玉如老師 / 承彥老師")
     
     elder_input = st.text_input("人員 / 耆老姓名（若多位協同請用逗號隔開）", placeholder="例如：姜耆老, 羅耆老")
@@ -161,7 +190,7 @@ if submitted:
 # -----------------------------------------------------------------------------
 # 📊 分頁呈現
 # -----------------------------------------------------------------------------
-tab1, tab2, tab3, tab4 = st.tabs(["📋 明細管理", "🎯 授課教師協同節數控管", "📊 自然月結與費用清冊", "📈 處室與人員時數統計"])
+tab1, tab2, tab3, tab4 = st.tabs(["📋 明細管理", "🎯 各年級/班級節數控管", "📊 自然月結與費用清冊", "📈 處室與人員時數統計"])
 
 with tab1:
     st.subheader("明細資料表")
@@ -173,57 +202,96 @@ with tab1:
     else:
         st.info("目前尚無登記紀錄，請由左側邊欄輸入資料。")
 
-# 🎯 授課教師協同節數剩餘控管頁面
+# 🎯 依「年級/班級」選取並進行額度控管
 with tab2:
-    st.subheader("🎯 各授課教師「協同耆老節數」使用與剩餘控管")
+    st.subheader("🎯 各年級/班級「協同耆老節數」使用與剩餘控管")
+    
+    selected_grade = st.selectbox(
+        "📌 請選擇欲監控的年級/班級：",
+        ["一年級", "二年級", "三年級", "四年級", "五年級", "六年級", "全校"]
+    )
+    
     df = load_data_from_gsheets()
     
     if not df.empty:
         df["登記時數/節數"] = pd.to_numeric(df["登記時數/節數"], errors="coerce").fillna(0)
-        # 過濾出協同耆老之鐘點費類別
-        elder_df = df[df["支領類別"].str.contains("鐘點費|授課", na=False)]
         
-        if not elder_df.empty:
-            teacher_summary = elder_df.groupby("主辦/授課教師")["登記時數/節數"].sum().reset_index()
-            teacher_summary.columns = ["授課教師", "已使用協同節數"]
-            
-            # 動態匹配專屬額度或預設額度
-            def assign_quota(t_name):
-                for k, v in SPECIAL_QUOTAS.items():
-                    if k in str(t_name):
-                        return v
-                return default_quota
+        # 1. 篩選出該年級 + 協同耆老類別 (排除工作費)
+        grade_df = df[
+            (df["年級班級"] == selected_grade) & 
+            (df["支領類別"].str.contains("鐘點費|授課", na=False))
+        ]
+        
+        # 取得該年級預設的老師配額字典
+        current_grade_quotas = GRADE_QUOTAS.get(selected_grade, {})
+        
+        # 統計該年級已登記的老師節數
+        if not grade_df.empty:
+            used_summary = grade_df.groupby("主辦/授課教師")["登記時數/節數"].sum().to_dict()
+        else:
+            used_summary = {}
 
-            teacher_summary["總額度 (節)"] = teacher_summary["授課教師"].apply(assign_quota)
-            teacher_summary["剩餘協同節數 (節)"] = teacher_summary["總額度 (節)"] - teacher_summary["已使用協同節數"]
+        # 建立展示資料
+        summary_rows = []
+        
+        # 包含有設定配額的老師 + 實際有填單的老師
+        all_teachers_in_grade = set(current_grade_quotas.keys())
+        for t in used_summary.keys():
+            all_teachers_in_grade.add(str(t))
+
+        for teacher_name in all_teachers_in_grade:
+            # 尋找已使用節數
+            used_h = 0.0
+            for u_k, u_v in used_summary.items():
+                if teacher_name in str(u_k):
+                    used_h += u_v
             
-            def get_status(remaining):
-                if remaining < 0:
-                    return f"🔴 已超出 {-remaining:.1f} 節"
-                elif remaining <= 5:
-                    return f"🟡 僅剩 {remaining:.1f} 節 (快滿)"
-                else:
-                    return "🟢 額度正常"
+            # 尋找該年級配額
+            quota_h = 12 # 預設保底
+            for q_k, q_v in current_grade_quotas.items():
+                if q_k in teacher_name:
+                    quota_h = q_v
+                    break
+
+            remaining_h = quota_h - used_h
             
-            teacher_summary["狀態提示"] = teacher_summary["剩餘協同節數 (節)"].apply(get_status)
-            teacher_summary.index = range(1, len(teacher_summary) + 1)
+            status_str = "🟢 額度正常"
+            if remaining_h < 0:
+                status_str = f"🔴 已超出 {-remaining_h:.1f} 節"
+            elif remaining_h <= 4:
+                status_str = f"🟡 僅剩 {remaining_h:.1f} 節 (快滿)"
+
+            summary_rows.append({
+                "年級/班級": selected_grade,
+                "授課教師": teacher_name,
+                "已使用節數": used_h,
+                "該年級總配額 (節)": quota_h,
+                "剩餘節數 (節)": remaining_h,
+                "狀態提示": status_str
+            })
+
+        summary_df = pd.DataFrame(summary_rows)
+        if not summary_df.empty:
+            summary_df.index = range(1, len(summary_df) + 1)
             
-            st.dataframe(teacher_summary, use_container_width=True)
+            st.write(f"### 📊 【{selected_grade}】教師協同節數監控表")
+            st.dataframe(summary_df, use_container_width=True)
             
             # 數據卡片直觀呈現
-            st.markdown("#### 📌 各教師即時卡片")
-            cols = st.columns(min(len(teacher_summary), 4))
-            for idx, row in teacher_summary.iterrows():
+            st.markdown(f"#### 📌 {selected_grade} 各教師即時卡片")
+            cols = st.columns(min(max(len(summary_df), 1), 4))
+            for idx, row in summary_df.iterrows():
                 col_idx = (idx - 1) % 4
                 with cols[col_idx]:
                     st.metric(
                         label=f"👨‍🏫 {row['授課教師']}",
-                        value=f"剩 {row['剩餘協同節數 (節)']} 節",
-                        delta=f"已用 {row['已使用協同節數']} / 總額 {row['總額度 (節)']} 節",
-                        delta_color="normal" if row['剩餘協同節數 (節)'] >= 0 else "inverse"
+                        value=f"剩 {row['剩餘節數 (節)']} 節",
+                        delta=f"已用 {row['已使用節數']} / 配額 {row['該年級總配額 (節)']} 節",
+                        delta_color="normal" if row['剩餘節數 (節)'] >= 0 else "inverse"
                     )
         else:
-            st.info("目前尚無協同耆老之授課紀錄。")
+            st.info(f"【{selected_grade}】目前尚無額度設定與紀錄。")
+
     else:
         st.info("尚無資料可供計算。")
 
